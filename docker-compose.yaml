@@ -1,0 +1,11 @@
+services:
+  latex-builder:
+    build: .
+    volumes:
+      - .:/data
+    # Optionally specify a different main file via environment variable or command
+    # environment:
+    #   - MAIN_TEX=distributed-systems-final-report.tex
+    # Working directory is /data as set in Dockerfile
+    container_name: scopa2-latex-builder
+    restart: unless-stopped
