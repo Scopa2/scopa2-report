@@ -1,0 +1,120 @@
+% Sequence diagram of a single in-game action.
+% Required packages/libraries:
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, calc, fit, backgrounds}
+\begin{tikzpicture}[
+    font=\footnotesize\sffamily,
+    >={Stealth[length=2mm]},
+    actor/.style={
+        draw, rounded corners=2pt, fill=blue!10,
+        minimum width=2.0cm, minimum height=0.6cm, align=center,
+        font=\footnotesize\bfseries
+    },
+    lifeline/.style={dashed, gray!70},
+    msg/.style={->, thick},
+    rmsg/.style={->, thick, gray!50!black, dashed},
+    selfmsg/.style={->, thick},
+    note/.style={
+        draw, rounded corners=1pt, fill=yellow!18,
+        font=\scriptsize\itshape, align=center, inner sep=2pt
+    },
+    txbox/.style={
+        draw, dotted, thick, rounded corners=2pt, fill=gray!4
+    }
+]
+
+% ---------- Participants ----------
+\def\xA      {0}
+\def\xApp    {3.6}
+\def\xDB     {7.2}
+\def\xSoketi {10.4}
+\def\xRedis  {13.5}
+\def\xB      {16.7}
+\def\yTop    {0}
+\def\yBot    {-10.6}
+
+\node[actor] (a)   at (\xA,      \yTop) {Client A};
+\node[actor] (app) at (\xApp,    \yTop) {Backend \\ \footnotesize(Octane)};
+\node[actor] (db)  at (\xDB,     \yTop) {YugabyteDB \\ \footnotesize(intra-region Raft)};
+\node[actor] (sk)  at (\xSoketi, \yTop) {Soketi (any pod)};
+\node[actor] (rd)  at (\xRedis,  \yTop) {Redis \\ \footnotesize(adapter)};
+\node[actor] (b)   at (\xB,      \yTop) {Client B};
+
+\draw[lifeline] (a.south)   -- (\xA,      \yBot);
+\draw[lifeline] (app.south) -- (\xApp,    \yBot);
+\draw[lifeline] (db.south)  -- (\xDB,     \yBot);
+\draw[lifeline] (sk.south)  -- (\xSoketi, \yBot);
+\draw[lifeline] (rd.south)  -- (\xRedis,  \yBot);
+\draw[lifeline] (b.south)   -- (\xB,      \yBot);
+
+% ---------- Messages ----------
+\def\ya{-0.6}     % 1. POST action
+\def\yb{-1.05}    % 2. BEGIN
+\def\yc{-1.50}    % 3. SELECT ... FOR UPDATE
+\def\yd{-1.95}    % 4. SELECT events ORDER BY seq
+\def\ye{-2.40}    % engine note
+\def\yf{-3.20}    % broadcast p1 view
+\def\yg{-3.65}    % broadcast p2 view
+\def\yh{-4.30}    % publish via redis
+\def\yi{-4.75}    % redis -> soketi pod (B)
+\def\yj{-5.20}    % soketi -> client A
+\def\yk{-5.65}    % soketi -> client B
+\def\yl{-6.30}    % INSERT game_events
+\def\ym{-6.75}    % COMMIT
+\def\yn{-7.20}    % 200 OK
+
+% Step 1
+\draw[msg] (\xA,\ya) -- (\xApp,\ya)
+    node[midway, above, font=\scriptsize] {1. \texttt{POST /api/games/\{id\}/action} \{pgn\}};
+
+% Transaction box outline
+\begin{scope}[on background layer]
+  \node[txbox,
+        fit={(\xApp-1.5, \yb+0.20) (\xApp+1.5, \ym-0.20)}] (txBox) {};
+\end{scope}
+\node[anchor=south west, font=\scriptsize\bfseries] at (\xApp-1.45, \yb+0.05) {DB::transaction};
+
+% Step 2
+\draw[msg] (\xApp,\yb) -- (\xDB,\yb)
+    node[midway, above, font=\scriptsize] {2. \texttt{BEGIN}};
+% Step 3
+\draw[msg] (\xApp,\yc) -- (\xDB,\yc)
+    node[midway, above, font=\scriptsize] {3. \texttt{SELECT * FROM games WHERE id=? FOR UPDATE}};
+% Step 4
+\draw[msg] (\xApp,\yd) -- (\xDB,\yd)
+    node[midway, above, font=\scriptsize] {4. \texttt{SELECT game\_events ORDER BY sequence\_number}};
+
+% Engine work (self-note on the App lifeline)
+\node[note, anchor=west] at (\xApp-1.4, \ye)
+    {5. \texttt{ScopaEngine = new(seed); engine.replay(events); engine.applyAction(actor, pgn)}};
+
+% Broadcasts (out of transaction logically, but Laravel broadcasts before insert here)
+\draw[msg] (\xApp,\yf) -- (\xSoketi,\yf)
+    node[midway, above, font=\scriptsize] {6. broadcast \texttt{game\_state\_updated} (p1 view)};
+\draw[msg] (\xApp,\yg) -- (\xSoketi,\yg)
+    node[midway, above, font=\scriptsize] {7. broadcast \texttt{game\_state\_updated} (p2 view)};
+
+% Soketi cross-pod fan-out via Redis adapter
+\draw[msg] (\xSoketi,\yh) -- (\xRedis,\yh)
+    node[midway, above, font=\scriptsize] {8. \texttt{PUBLISH} adapter channel};
+\draw[rmsg] (\xRedis,\yi) -- (\xSoketi,\yi)
+    node[midway, above, font=\scriptsize] {9. fan-out to every Soketi pod};
+
+% Delivery
+\draw[rmsg] (\xSoketi,\yj) -- (\xA,\yj)
+    node[midway, above, font=\scriptsize] {10. WS event \texttt{game\_state\_updated} (A's view)};
+\draw[rmsg] (\xSoketi,\yk) -- (\xB,\yk)
+    node[midway, above, font=\scriptsize] {11. WS event \texttt{game\_state\_updated} (B's view)};
+
+% Persist event then commit (back inside the transaction)
+\draw[msg] (\xApp,\yl) -- (\xDB,\yl)
+    node[midway, above, font=\scriptsize]
+    {12. \texttt{INSERT game\_events} (seq=$n{+}1$, actor, pgn) [unique on (game\_id,seq)]};
+\draw[msg] (\xApp,\ym) -- (\xDB,\ym)
+    node[midway, above, font=\scriptsize] {13. \texttt{COMMIT} (Raft majority ack)};
+
+% Response
+\draw[rmsg] (\xApp,\yn) -- (\xA,\yn)
+    node[midway, above, font=\scriptsize] {14. \texttt{200 OK}};
+
+\end{tikzpicture}

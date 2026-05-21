@@ -10,6 +10,10 @@
 \usepackage{booktabs}
 \usepackage{xcolor}
 \usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc,
+                shapes.geometric, shapes.multipart}
+\usepackage{float}
 \usepackage{cleveref} % must be last
 
 \definecolor{lstbg}{rgb}{0.97,0.97,0.97}
@@ -51,6 +55,17 @@
     \end{figure}%
 }
 
+% TikZ figure include: pulls diagrams/<label>.tex, scales to text width, captions, labels.
+% Usage: \figtikz{label}{caption text}
+\newcommand{\figtikz}[2]{%
+    \begin{figure}
+        \centering
+        \resizebox{\textwidth}{!}{\input{diagrams/#1.tex}}
+        \caption{#2}
+        \label{fig:#1}
+    \end{figure}%
+}
+
 \title{\LARGE
     Scopa2\\
     A Geo-Distributed Multiplayer Card Game
@@ -58,7 +73,7 @@
 \subtitle{Final Report for the Distributed Systems Course --- AY 2025/2026}
 
 \author{
-    Marco Coppola \\ \emailaddr{marcocoppola02.mc@gmail.com}
+    Marco Coppola \\ \emailaddr{marco.coppola3@studio.unibo.it}
     \and
     Valerio Pio De Nicola \\ \emailaddr{valeriopio.denicola@studio.unibo.it}
 }
@@ -228,45 +243,36 @@ flag.
 
 \subsection{Architectural Style}\label{architecture}
 
-Scopa2 does not fit neatly into a single one of the canonical
-architectural styles; it is a deliberate hybrid of three.
+The architectural choice that matters most in Scopa2 is a recovery one
+rather than a stylistic one: every match is modelled as an
+\emph{event-sourced deterministic state machine}. The authoritative
+state of a game is not a snapshot stored in a database row but the
+totally ordered sequence of moves persisted in the
+\texttt{game\_events} log. The in-memory \texttt{ScopaEngine} is pure:
+given the same seed and the same event list it always produces the
+same \texttt{GameState}.
 
-The \emph{layered} or \emph{three-tier} structure organises every region
-as a stack of presentation, application, and data. Inside the
-application tier the controllers translate HTTP requests into domain
-actions; the model layer encapsulates the game engine; the persistence
-layer is reached only through Eloquent ORM. The advantage of this strict
-separation is clear modularity --- the engine can be unit-tested in
-isolation, the controllers replaced wholesale --- at the cost of
-crossing a few extra function calls on every request.
+This single decision shapes the rest of the system. Application pods
+can be stateless and interchangeable because any of them can
+reconstruct any match by replaying its log. Recovery from a crashed
+pod or even from a region-wide outage reduces to fetching the log from
+a surviving cluster and replaying it; most of the resilience
+properties of the system fall out as a corollary of determinism rather
+than as the product of dedicated recovery code
+(see \Cref{fault-tolerance}).
 
-The \emph{event-based} style governs the realtime fan-out. Once a move
-has been validated and persisted, the server emits a domain event
-(\texttt{GameStateUpdated}, \texttt{RoundFinished}, \texttt{GameFinished},
-\texttt{MatchFound}) that is published on the appropriate channel and
-consumed by every subscribed client. This decouples the controllers from
-the clients in both time and space, and it is what \citet{eugster2003many}
-call the \emph{many-faced} pattern of publish/subscribe: the producer
-need not know who consumes the event, and consumers need not know who
-produced it.
-
-The \emph{shared dataspace} style emerges in the matchmaking subsystem,
-where the queue lives as a Redis sorted set on which any backend pod can
-operate. The ELO rating acts as the score, and the matching logic
-inspects the dataspace rather than holding any in-memory state itself.
-This is the closest analogue in our system to a Linda-style tuple space:
-every pod \emph{reads} the queue, every pod can \emph{write} to it, and
-nobody owns it.
-
-We rejected the \emph{object-based} style described by
-\citet{birrell1984implementing}: fine-grained remote method 
-calls between the application and the database would have multiplied chatty round-trips, 
-and we wanted the freedom to swap the underlying database, the Redis cluster, or the
-realtime broker without rewriting the controllers.
+Two ancillary patterns surround the core. An event-driven
+publish/subscribe bus handles the realtime fan-out: validated moves are
+emitted as domain events on Pusher-compatible channels and delivered to
+whichever pod holds each player's WebSocket. A shared Redis dataspace
+holds the matchmaking queue, on which any application pod can operate
+without keeping any in-memory state itself. Both choices serve the same
+end as the event-sourced engine: keep the application tier stateless so
+the system survives the loss of any of its parts.
 
 \subsection{Infrastructure}\label{infrastructure}
 
-\figph{topology}{3.4cm}{Global symmetric topology. Each region (EU,
+\figtikz{topology}{Global symmetric topology. Each region (EU,
 North America) hosts an independent stack: an NGINX ingress in front of
 a horizontally-scaled fleet of FrankenPHP application pods, a pair of
 Soketi WebSocket pods, a three-node Redis cluster with three Sentinels,
@@ -348,14 +354,6 @@ typically under seven minutes.
 
 \subsection{Domain Modelling}\label{modelling}
 
-\figph{class-engine}{3.2cm}{Class diagram of the in-memory game engine.
-\texttt{ScopaEngine} owns a \texttt{GameState} which aggregates a deck,
-a table, a \texttt{PlayerCollection} of two \texttt{PlayerState}s, a
-shared \texttt{Scores} object, a per-card \texttt{Mutations} map, and
-three \emph{Santi} drawn from the shop. The engine receives a stream of
-\texttt{GameEvent}s (PGN-like notation) and re-applies them to produce a
-deterministic state.}
-
 The persistent model is intentionally minimal. The
 \texttt{users} table holds the immutable identity (id, username,
 \texttt{elo} integer). The \texttt{games} table records the existence
@@ -395,16 +393,24 @@ Three patterns describe the totality of inter-component communication
 in Scopa2.
 
 \paragraph{Request/response (synchronous).} The client issues HTTPS
-requests against a small REST surface: \texttt{POST /api/auth/register},
-\texttt{POST /api/auth/login}, \texttt{POST /api/matchmaking/join},
-\texttt{POST /api/matchmaking/leave}, \texttt{GET /api/matchmaking/status},
-\texttt{POST /api/games}, \texttt{POST /api/games/\{id\}/join},
-\texttt{GET /api/games/\{id\}} and the central
-\texttt{POST /api/games/\{id\}/action} that submits a move. All
-endpoints carry a \texttt{Bearer} token (Sanctum) and a custom
-\texttt{player\_secret} header derived from the user id; the
-combination is what makes a single request unambiguously
-identity-bound. Responses are JSON.
+requests against a small REST surface:
+
+\begin{itemize}[leftmargin=1.4em]
+  \item \texttt{POST /api/auth/register} --- create a new account.
+  \item \texttt{POST /api/auth/login} --- authenticate an existing user.
+  \item \texttt{POST /api/matchmaking/join} --- enter the matchmaking queue.
+  \item \texttt{POST /api/matchmaking/leave} --- leave the queue.
+  \item \texttt{GET\phantom{T} /api/matchmaking/status} --- check the
+  current queue state.
+  \item \texttt{POST /api/games} --- create a new game.
+  \item \texttt{POST /api/games/\{id\}/join} --- join an existing game.
+  \item \texttt{GET\phantom{T} /api/games/\{id\}} --- fetch the
+  canonical state of a game.
+  \item \texttt{POST /api/games/\{id\}/action} --- submit a move.
+\end{itemize}
+
+All endpoints carry a \texttt{Bearer} token (Sanctum) which makes every
+request unambiguously identity-bound. Responses are JSON.
 
 \paragraph{Publish/subscribe (asynchronous).} The realtime layer follows
 the Pusher protocol over WebSockets. The Godot client opens a single
@@ -426,7 +432,7 @@ endpoint, and then subscribes to a small set of private channels:
   indicator (see \Cref{availability}).
 \end{itemize}
 
-\figph{seq-matchmaking}{3.0cm}{Sequence of the discovery and
+\figtikz{seq-matchmaking}{Sequence of the discovery and
 matchmaking phase. The client first runs the endpoint selector, then
 performs authentication, joins the queue, opens a WebSocket,
 authenticates the socket against the backend, subscribes to
@@ -435,7 +441,7 @@ compatible players are paired, the Lua matchmaker emits the
 \texttt{match\_found} event with the new game id; both clients
 subscribe to the game's channels and fetch the initial state.}
 
-\figph{seq-action}{3.6cm}{Sequence of a single in-game action. The
+\figtikz{seq-action}{Sequence of a single in-game action. The
 client POSTs the move to the backend; Octane acquires a row lock on
 the game; the engine replays the existing event list, applies the
 incoming action, persists the resulting \texttt{GameEvent} with the
@@ -458,11 +464,13 @@ of pragmatic conventions: the opponent's hand is exposed as a list of
 both players but the cards themselves are hidden), and card mutations
 are carried as a flat map from the original card code to its currently
 visible code, e.g. \texttt{\{"4C":"4D"\}} after a \emph{San~Biagio}
-effect.
+effect (a Santo that swaps the suit of a chosen card on the table,
+here turning a four of clubs into a four of diamonds so the holder of
+a four of diamonds can capture it).
 
 \subsection{Behaviour}\label{behaviour}
 
-\figph{state-match}{2.8cm}{State machine of a match. A game is born in
+\figtikz{state-match}{State machine of a match. A game is born in
 \texttt{WAITING\_FOR\_PLAYERS}, transitions to \texttt{PLAYING} once
 both players have joined, alternates internally through several rounds
 (\texttt{deal} $\to$ \texttt{play} $\to$ \texttt{advance round}), and
@@ -517,45 +525,29 @@ interleaving any other command on the database, which makes the
 critical section a true atomic step. \Cref{lst:lua-matchmaker} shows
 the heart of the algorithm.
 
-\begin{lstlisting}[language={[5.2]Lua},caption={Atomic matchmaking
-section --- guarantees that no two pods can ever extract the same player
-from the queue, regardless of how many pods are running.},label={lst:lua-matchmaker}]
-for i = 1, #players do
-    if not skip[players[i].id] then
-        local p1 = players[i]
-        local p1_ts = tonumber(redis.call('HGET', timestamps_key, p1.id) or current_time)
-        local p1_wait = current_time - p1_ts
-        local p1_window = math.min(
-            elo_base + math.floor(p1_wait / elo_interval) * elo_rate,
-            elo_max
-        )
+\begin{lstlisting}[language={},mathescape=true,caption={Atomic
+matchmaking section, shown as pseudocode. The real implementation runs
+server-side inside Redis as a single Lua script, which by Redis'
+execution model is guaranteed to run to completion without
+interleaving any other command --- this is what makes the critical
+section a true atomic step regardless of how many application pods
+race for the same queue.},label={lst:lua-matchmaker}]
+players  = ZSET matchmaking:queue, sorted by ELO
+paired   = $\emptyset$
+for each p1 in players (in ELO order):
+    if p1 $\in$ paired: continue
+    w1 = elo_window(wait_time(p1))    // widens with patience
 
-        for j = i + 1, #players do
-            if not skip[players[j].id] then
-                local p2 = players[j]
-                local p2_ts = tonumber(redis.call('HGET', timestamps_key, p2.id) or current_time)
-                local p2_wait = current_time - p2_ts
-                local p2_window = math.min(
-                    elo_base + math.floor(p2_wait / elo_interval) * elo_rate,
-                    elo_max
-                )
+    for each p2 in players coming after p1:
+        if p2 $\in$ paired: continue
+        w2 = elo_window(wait_time(p2))
 
-                local elo_diff = math.abs(p1.elo - p2.elo)
-                if elo_diff <= p1_window and elo_diff <= p2_window then
-                    redis.call('ZREM', queue_key, p1.id)
-                    redis.call('ZREM', queue_key, p2.id)
-                    redis.call('HDEL', timestamps_key, p1.id)
-                    redis.call('HDEL', timestamps_key, p2.id)
-                    table.insert(results, p1.id)
-                    table.insert(results, p2.id)
-                    skip[p1.id] = true
-                    skip[p2.id] = true
-                    break
-                end
-            end
-        end
-    end
-end
+        if |p1.elo - p2.elo| $\le$ min(w1, w2):
+            ZREM queue p1, p2
+            HDEL timestamps p1, p2
+            emit pair (p1, p2)
+            paired $\leftarrow$ paired $\cup$ {p1, p2}
+            break
 \end{lstlisting}
 
 \paragraph{CAP and PACELC.} The system spans more than one consistency
@@ -715,7 +707,10 @@ Redis.
 
 \subsection{Technology Stack}
 
-\begin{table}[h]
+\Cref{tab:stack} groups the chosen technologies by architectural
+layer.
+
+\begin{table}[H]
   \centering
   \begin{tabular}{@{}lll@{}}
     \toprule
@@ -1032,7 +1027,7 @@ db:
   backups:   "yb-tserver-1.yb-tservers.db.svc.cluster.local,yb-tserver-2.yb-tservers.db.svc.cluster.local"
 \end{lstlisting}
 
-\figph{deployment}{3.0cm}{Per-region Kubernetes resource graph. The
+\figtikz{deployment}{Per-region Kubernetes resource graph. The
 ingress fronts a Service that load-balances across the deployment of
 FrankenPHP pods; the Soketi deployment exposes a separate Service for
 the WebSocket traffic. The HPA controls replica count for the
@@ -1090,36 +1085,29 @@ the password-based flow is one of the items in
 
 \subsection{Work Split}
 
-The table below summarises the principal responsibilities. 
-The split is intentionally
-based on areas of ownership rather than on a temporal slice: each
-member owned the design and implementation of their areas end-to-end,
-with cross-review on the report and the architectural decisions.
+The two of us met in person almost every day and worked from the same
+workstation for the vast majority of the project. As a consequence the
+planning, the architectural decisions, and the bulk of the
+implementation --- both on the backend and on the Godot client --- were
+carried out jointly: there is no meaningful sense in which a specific
+controller or scene was ``owned'' by one of us, and the report itself
+was written together.
 
-\begin{table}[h]
-  \centering
-  \begin{tabular}{@{}p{6.3cm}p{2.3cm}p{2.3cm}@{}}
-    \toprule
-    \textbf{Area} & \textbf{Marco} & \textbf{Valerio} \\
-    \midrule
-    Backend application skeleton, Laravel + Octane + FrankenPHP setup & primary & review \\
-    Game engine (\texttt{ScopaEngine}, scoring, Santi mechanic, replay) & primary & contribution to Santi/scoring \\
-    Matchmaking service and Lua atomic algorithm & primary & review \\
-    Persistence schema and YugabyteDB integration & primary & review \\
-    Broadcasting, Soketi configuration, Sentinel wiring & primary & contribution \\
-    Godot client, scenes, UI flow & contribution & primary \\
-    HTTP/WebSocket client, endpoint selector, failover logic & contribution & primary \\
-    Helm chart, K3s deployment, regional values & primary & contribution \\
-    GitHub Actions CI/CD pipeline, Tailscale integration & primary & review \\
-    Chaos testing, tolerance matrix execution & joint & joint \\
-    Report writing & joint & joint \\
-    \bottomrule
-  \end{tabular}
-  \caption{Responsibility matrix. ``Primary'' indicates the principal
-  author of the area; ``contribution'' indicates substantial co-work;
-  ``review'' indicates pair-programming and pull-request review.}
-  \label{tab:workload}
-\end{table}
+The split surfaces only in the two areas where the work required
+hardware or context that only one of us had at hand:
+
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Marco} owned the production deployment side. With
+  access to a dedicated home-lab server he set up the K3s cluster,
+  the per-region Helm releases, the reverse-proxy and domain
+  configuration, and the Tailscale-bridged CI/CD pipeline that
+  performs the rolling rollout from GitHub Actions into the cluster.
+  \item \textbf{Valerio} owned the client-side recovery manager
+  inside the Godot project: the ping-based endpoint selection, the
+  heartbeat-driven failover logic, the channel resubscription on
+  reconnect, and the manual chaos validation that the resulting flow
+  actually masks regional outages from the end user.
+\end{itemize>
 
 \subsection{Reflections}
 
@@ -1137,14 +1125,14 @@ the deterministic engine that lets the system recover by replay rather
 than by snapshotting.
 
 The most uncomfortable finding has been that distributed-systems
-design can easily generate \emph{honest-looking but wrong} solutions:
-the matchmaking service implemented the right ELO-window algorithm
-inside a Lua script that correctly serialises critical operations, but
-in the present codebase the \texttt{findMatches} routine is invoked
-piggy-backed on join requests rather than from a scheduled background
-process; if the queue grows during a quiet HTTP minute, nobody is
-running the matcher. We have listed this in \Cref{future-works} as
-the most impactful follow-up item.
+design can easily produce \emph{honest-looking but wrong} solutions.
+The clearest example in our codebase is that the Lua matchmaker
+correctly serialises the critical section, yet the script itself is
+currently invoked piggy-backed on join requests rather than from a
+scheduled background process: during a quiet HTTP minute the queue
+can keep growing while no pod is actually trying to pair the waiting
+players. The correctness of the primitive does not, on its own,
+guarantee the correctness of the system that uses it.
 
 Two large portions of the course syllabus deliberately fall outside
 our scope. We do not implement smart contracts, distributed ledgers,
@@ -1157,55 +1145,11 @@ a Docker image, and we have no use case for shipping executable code
 across the boundary. We acknowledge these omissions explicitly rather
 than glossing them over.
 
-If we had another week we would replace the \texttt{sleep(5)} call in
-the round-end controller (which currently blocks an entire Octane
-worker for five seconds in the name of UI pacing), restore the
-input-validation rule that the action controller is supposed to use
-before the engine is invoked, and harden the Redis Sentinel quorum
-configuration that proved insufficient in our chaos tests.
-
 \section{Future Works}\label{future-works}
 
-The items below are grouped by category and prioritised by gravity.
-The most urgent ones materially affect correctness and would be fixed
-first; the lower-priority ones are stylistic or strategic.
-
-\subsection{Correctness}
-
-\begin{itemize}[leftmargin=1.4em]
-  \item \textbf{Background matchmaker.} \texttt{MatchmakingService::findMatches()}
-  is currently only invoked on enqueue paths. A scheduled Artisan
-  command running every second on a dedicated pod (or an Octane tick)
-  must drive the matcher independently of HTTP traffic.
-  \item \textbf{Login validation.} \texttt{AuthController::login()}
-  declares the \texttt{username} field as \texttt{email} format and
-  therefore rejects every legitimate login. The validation rule must
-  be relaxed to a plain string.
-  \item \textbf{Initial game status.} \texttt{GameController::create()}
-  sets the new game's status to \texttt{PLAYING} even when no second
-  player has joined yet; the correct enum value is
-  \texttt{WAITING\_FOR\_PLAYERS}.
-  \item \textbf{Action input validation.} The validator on
-  \texttt{POST /games/\{id\}/action} is currently commented out; a
-  \texttt{GameActionRequest} must guard the action notation against
-  malformed input before the engine is invoked.
-  \item \textbf{Santi purchase/use validation.}
-  \texttt{MoveValidator::validateBuyAction()} and
-  \texttt{validateUseAction()} unconditionally return \texttt{true}.
-  Their predicates must be implemented to reject illegal
-  purchases (insufficient blood, invalid card combinations) and
-  illegal uses (Santo not in inventory, target ineligible).
-  \item \textbf{Round-end blocking sleep.} The five-second
-  \texttt{sleep(5)} in the round-end callback inside the action
-  controller blocks the Octane worker; it should be replaced with a
-  delay enforced by the client (or by a delayed-event broadcast on
-  the WebSocket side).
-  \item \textbf{Round-1 fairness.} The engine currently always starts
-  P1 first in every round; the alternation logic exists but is
-  commented out and must be restored.
-\end{itemize}
-
-\subsection{Distributed-Systems Depth}
+The items below collect the distributed-systems extensions we
+consider most worthwhile to pursue beyond the current scope of the
+project.
 
 \begin{itemize}[leftmargin=1.4em]
   \item \textbf{Periodic checkpointing.} For very long games the
@@ -1232,41 +1176,6 @@ first; the lower-priority ones are stylistic or strategic.
   \item \textbf{Service-mesh mTLS.} Internal traffic between pods
   flows over the plain K3s overlay. Adding Linkerd would provide
   mTLS automatically without application changes.
-\end{itemize}
-
-\subsection{Engineering Polish}
-
-\begin{itemize}[leftmargin=1.4em]
-  \item \textbf{Observability.} The Dockerfile pre-installs the
-  OpenTelemetry PHP extension but it is not wired to a collector;
-  setting up a regional OpenTelemetry Collector + Prometheus + Grafana
-  stack would give us per-region SLO dashboards.
-  \item \textbf{Rate limiting.} The matchmaking and action endpoints
-  are not rate-limited. A simple Laravel \texttt{throttle} middleware
-  per user would prevent abuse.
-  \item \textbf{Tests for distributed concerns.} We have no
-  integration tests that exercise the Lua matchmaker under simulated
-  multi-pod contention, no Soketi-level tests for the broadcast bus,
-  and no chaos automation for the storage tier.
-  \item \textbf{Endpoint configuration override.} The Godot client
-  hard-codes the two regional hostnames. An environment-variable
-  override (or a config file alongside the binary) would simplify
-  testing against staging stacks.
-  \item \textbf{Information leak in mutations payload.}
-  \texttt{GameState::toPublicView()} exposes the full mutations map
-  to both players; it should be filtered down to entries that affect
-  cards visible to the requesting player.
-  \item \textbf{Bearer token rotation.} The Sanctum token issued at
-  registration is never refreshed; long-lived sessions are therefore
-  pinned to a single token that, if leaked, grants permanent access.
-  \item \textbf{Dead code removal.} The \texttt{routes/ai.php} file
-  references a class that does not exist in the repository; the file
-  must either be completed or removed.
-  \item \textbf{GitHub Issues hygiene.} The course rules ask us to
-  use GitHub Issues for discussions, feature requests, and bug
-  reports. We tracked issues informally in shared notes and the
-  project backlog Markdown files; migrating those to GitHub Issues
-  would close the loop on the recommended workflow.
 \end{itemize}
 
 \bibliographystyle{plain}

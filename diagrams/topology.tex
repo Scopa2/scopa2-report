@@ -1,0 +1,105 @@
+% Global symmetric topology.
+% Required packages/libraries (declare once in the preamble of the main report):
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
+\begin{tikzpicture}[
+    font=\small\sffamily,
+    >={Stealth[length=2mm]},
+    client/.style    ={draw, rounded corners=2pt, fill=blue!8,   minimum width=2.0cm, minimum height=0.7cm, align=center},
+    ingress/.style   ={draw, rounded corners=2pt, fill=orange!20, minimum width=4.2cm, minimum height=0.7cm, align=center},
+    pod/.style       ={draw, rounded corners=2pt, fill=green!12,  minimum width=1.9cm, minimum height=0.7cm, align=center, font=\footnotesize},
+    storeg/.style    ={draw, rounded corners=2pt, fill=red!10,    minimum width=4.2cm, minimum height=0.7cm, align=center, font=\footnotesize},
+    grp/.style       ={draw, dashed, rounded corners=3pt, inner sep=4pt},
+    regionlbl/.style ={font=\footnotesize\bfseries\sffamily},
+    flow/.style      ={->, thick},
+    repl/.style      ={<->, dashed, thick, gray}
+]
+
+% ---------------- Clients ----------------
+\node[client] (cEU) {Client (EU)};
+\node[client, right=6.6cm of cEU] (cUS) {Client (US)};
+
+
+% ============================================================
+% EU region
+% ============================================================
+\node[ingress, below=2.0cm of cEU] (ingEU) {NGINX Ingress \\ \footnotesize\texttt{scopa-eu.\dots}};
+\node[pod, below left=0.6cm and -1.4cm of ingEU] (appEU1) {App pod \\ FrankenPHP};
+\node[pod, right=0.15cm of appEU1] (appEU2) {App pod \\ FrankenPHP};
+\node[font=\tiny, right=0.05cm of appEU2, text=gray] (hpaEU) {HPA $2{\to}10$};
+
+\node[pod, below=0.7cm of appEU1] (sokEU1) {Soketi};
+\node[pod, right=0.15cm of sokEU1] (sokEU2) {Soketi};
+
+\node[storeg, below=0.7cm of sokEU1.south, xshift=0.95cm] (redEU) {Redis (1M + 2R) + 3 Sentinels};
+\node[storeg, below=0.25cm of redEU] (ybEU) {YugabyteDB \\ 3 masters $+$ 3 tservers (intra-region Raft)};
+
+% wires inside EU
+\draw[flow] (ingEU.south) -- ++(0,-0.15) -| (appEU1.north);
+\draw[flow] (ingEU.south) -- ++(0,-0.15) -| (appEU2.north);
+\draw[flow] (appEU1.south) -- (sokEU1.north);
+\draw[flow] (appEU1.south) -- (sokEU2.north);
+\draw[flow] (appEU2.south) -- (sokEU1.north);
+\draw[flow] (appEU2.south) -- (sokEU2.north);
+\draw[flow] (sokEU1.south) -- (redEU.north);
+\draw[flow] (sokEU2.south) -- (redEU.north);
+\draw[flow] (appEU1.south west) to[bend right=15] (redEU.west);
+\draw[flow] (appEU2.south east) to[bend left=15] (redEU.east);
+\draw[flow] (appEU1.west) to[bend right=10]  (ybEU.north west);
+\draw[flow] (appEU2.east) to[bend left=10]  (ybEU.north east);
+
+% region box
+\begin{scope}[on background layer]
+  \node[grp, fill=blue!3, fit=(ingEU)(appEU1)(appEU2)(sokEU1)(sokEU2)(redEU)(ybEU)(hpaEU)] (regEU) {};
+\end{scope}
+\node[regionlbl, anchor=north west] at (regEU.north west) {\;Region: EU};
+
+% ============================================================
+% US region
+% ============================================================
+\node[ingress, below=2.0cm of cUS] (ingUS) {NGINX Ingress \\ \footnotesize\texttt{scopa-us.\dots}};
+\node[pod, below left=0.6cm and -1.4cm of ingUS] (appUS1) {App pod \\ FrankenPHP};
+\node[pod, right=0.15cm of appUS1] (appUS2) {App pod \\ FrankenPHP};
+\node[font=\tiny, right=0.05cm of appUS2, text=gray] (hpaUS) {HPA $2{\to}10$};
+
+\node[pod, below=0.7cm of appUS1] (sokUS1) {Soketi};
+\node[pod, right=0.15cm of sokUS1] (sokUS2) {Soketi};
+
+\node[storeg, below=0.7cm of sokUS1.south, xshift=0.95cm] (redUS) {Redis (1M + 2R) + 3 Sentinels};
+\node[storeg, below=0.25cm of redUS] (ybUS) {YugabyteDB \\ 3 masters $+$ 3 tservers (intra-region Raft)};
+
+\draw[flow] (ingUS.south) -- ++(0,-0.15) -| (appUS1.north);
+\draw[flow] (ingUS.south) -- ++(0,-0.15) -| (appUS2.north);
+\draw[flow] (appUS1.south) -- (sokUS1.north);
+\draw[flow] (appUS1.south) -- (sokUS2.north);
+\draw[flow] (appUS2.south) -- (sokUS1.north);
+\draw[flow] (appUS2.south) -- (sokUS2.north);
+\draw[flow] (sokUS1.south) -- (redUS.north);
+\draw[flow] (sokUS2.south) -- (redUS.north);
+\draw[flow] (appUS1.south west) to[bend right=15] (redUS.west);
+\draw[flow] (appUS2.south east) to[bend left=15] (redUS.east);
+\draw[flow] (appUS1.west) to[bend right=10]  (ybUS.north west);
+\draw[flow] (appUS2.east) to[bend left=10]  (ybUS.north east);
+
+\begin{scope}[on background layer]
+  \node[grp, fill=red!3, fit=(ingUS)(appUS1)(appUS2)(sokUS1)(sokUS2)(redUS)(ybUS)(hpaUS)] (regUS) {};
+\end{scope}
+\node[regionlbl, anchor=north west] at (regUS.north west) {\;Region: NA};
+
+% ============================================================
+% Client → Region routing (lowest-score wins)
+% ============================================================
+\draw[flow] (cEU.south) -- node[midway, sloped, above, font=\tiny] {HTTPS + WSS} (ingEU.north);
+\draw[flow, gray, dashed] (cEU.south east) to[bend left=10]
+        node[midway, sloped, above, font=\tiny] {alt.} (ingUS.north west);
+\draw[flow] (cUS.south) -- node[midway, sloped, above, font=\tiny] {HTTPS + WSS} (ingUS.north);
+\draw[flow, gray, dashed] (cUS.south west) to[bend right=10]
+        node[midway, sloped, above, font=\tiny] {alt.} (ingEU.north east);
+
+% ============================================================
+% Cross-region replication
+% ============================================================
+\draw[repl] (ybEU.east) -- node[midway, above, font=\footnotesize\itshape]
+        {XCluster (async, RPO $\approx$ 1\,s)} (ybUS.west);
+
+\end{tikzpicture}

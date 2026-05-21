@@ -1,0 +1,118 @@
+% Sequence diagram of discovery + matchmaking.
+% Required packages/libraries:
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, calc, fit, backgrounds}
+\begin{tikzpicture}[
+    font=\footnotesize\sffamily,
+    >={Stealth[length=2mm]},
+    actor/.style={
+        draw, rounded corners=2pt, fill=blue!10,
+        minimum width=2.0cm, minimum height=0.6cm, align=center,
+        font=\footnotesize\bfseries
+    },
+    lifeline/.style={dashed, gray!70},
+    msg/.style={->, thick},
+    rmsg/.style={->, thick, gray!50!black, dashed}, % return / async
+    note/.style={
+        draw, rounded corners=1pt, fill=yellow!18,
+        font=\scriptsize\itshape, align=center, inner sep=2pt
+    }
+]
+
+% ---------- Participants and lifelines ----------
+\def\xClient {0}
+\def\xEU     {3.5}
+\def\xUS     {6.7}
+\def\xRedis  {9.9}
+\def\xSoketi {13.0}
+\def\yTop    {0}
+\def\yBot    {-12}
+
+\node[actor] (cl)  at (\xClient, \yTop) {Client};
+\node[actor] (eu)  at (\xEU,     \yTop) {Backend EU};
+\node[actor] (us)  at (\xUS,     \yTop) {Backend US};
+\node[actor] (rd)  at (\xRedis,  \yTop) {Redis (EU) \\ \footnotesize ZSET + Lua};
+\node[actor] (sk)  at (\xSoketi, \yTop) {Soketi (EU)};
+
+\draw[lifeline] (cl.south) -- (\xClient, \yBot);
+\draw[lifeline] (eu.south) -- (\xEU,     \yBot);
+\draw[lifeline] (us.south) -- (\xUS,     \yBot);
+\draw[lifeline] (rd.south) -- (\xRedis,  \yBot);
+\draw[lifeline] (sk.south) -- (\xSoketi, \yBot);
+
+% ---------- Messages ----------
+\def\ya{-1.0}     % 1. /up EU
+\def\yb{-1.5}    % 2. /up US
+\def\yc{-2}    % 3. select pick note
+\def\yd{-3}    % 4. login
+\def\ye{-3.5}    % 5. 200 token
+\def\yf{-4}    % 6. /matchmaking/join
+\def\yg{-4.5}    % 7. ZADD/HSET
+\def\yh{-5}    % 8. 200 queued
+\def\yi{-5.5}    % 9. WSS connect
+\def\yj{-6}    % 10. connection_established
+\def\yk{-6.5}    % 11. /broadcasting/auth
+\def\yl{-7}    % 12. signature
+\def\ym{-7.5}    % 13. subscribe
+\def\yn{-8}    % 14. findMatches() loop note
+\def\yo{-9}    % 15. EVAL Lua
+\def\yp{-9.5}    % 16. pair
+\def\yq{-10}    % 17. INSERT games
+\def\yr{-11}    % 18. broadcast match_found
+\def\ys{-11.5}    % 19. pusher event match_found
+
+% Discovery
+\draw[msg]  (\xClient,\ya) -- (\xEU,\ya)
+    node[midway, above, font=\scriptsize] {1. \texttt{GET /up} ($\times$3)};
+\draw[msg]  (\xClient,\yb) -- (\xUS,\yb)
+    node[midway, above, font=\scriptsize] {2. \texttt{GET /up} ($\times$3, parallel)};
+
+\node[note, anchor=west] at (\xClient+0.2, \yc)
+    {3. EndpointSelector: score $=$ avgPing $+ 100\cdot$loss\%; pick EU};
+
+% Authentication
+\draw[msg]  (\xClient,\yd) -- (\xEU,\yd)
+    node[midway, above, font=\scriptsize] {4. \texttt{POST /api/auth/login}};
+\draw[rmsg] (\xEU,\ye) -- (\xClient,\ye)
+    node[midway, above, font=\scriptsize] {5. \texttt{200} bearer\_token + player\_secret};
+
+% Join queue
+\draw[msg]  (\xClient,\yf) -- (\xEU,\yf)
+    node[midway, above, font=\scriptsize] {6. \texttt{POST /api/matchmaking/join} (Bearer)};
+\draw[msg]  (\xEU,\yg) -- (\xRedis,\yg)
+    node[midway, above, font=\scriptsize] {7. \texttt{ZADD queue} + \texttt{HSET timestamps}};
+\draw[rmsg] (\xEU,\yh) -- (\xClient,\yh)
+    node[midway, above, font=\scriptsize] {8. \texttt{200 queued}};
+
+% WebSocket setup
+\draw[msg]  (\xClient,\yi) -- (\xSoketi,\yi)
+    node[midway, above, font=\scriptsize] {9. WSS connect \texttt{/ws/app/key}};
+\draw[rmsg] (\xSoketi,\yj) -- (\xClient,\yj)
+    node[midway, above, font=\scriptsize] {10. \texttt{pusher:connection\_established} (socket\_id)};
+
+% Channel auth + subscribe
+\draw[msg]  (\xClient,\yk) -- (\xEU,\yk)
+    node[midway, above, font=\scriptsize] {11. \texttt{POST /broadcasting/auth} (socket\_id, channel)};
+\draw[rmsg] (\xEU,\yl) -- (\xClient,\yl)
+    node[midway, above, font=\scriptsize] {12. auth signature};
+\draw[msg]  (\xClient,\ym) -- (\xSoketi,\ym)
+    node[midway, above, font=\scriptsize]
+    {13. \texttt{pusher:subscribe} \texttt{private-\{user\}\_matchmaking\_result}};
+
+% Background matchmaker
+\node[note, anchor=west] at (\xEU-0.3, \yn)
+    {14. \texttt{MatchmakingService::findMatches()} (background loop on any pod)};
+\draw[msg]  (\xEU,\yo) -- (\xRedis,\yo)
+    node[midway, above, font=\scriptsize] {15. \texttt{EVAL} Lua matchmaker (atomic pair-finding)};
+\draw[rmsg] (\xRedis,\yp) -- (\xEU,\yp)
+    node[midway, above, font=\scriptsize] {16. returns flat pair \texttt{[p1, p2]}};
+
+% Game creation + broadcast
+\node[note, anchor=west] at (\xEU-0.3, \yq)
+    {17. App writes \texttt{games} row to YugabyteDB (uuid, seed, status)};
+\draw[msg]  (\xEU,\yr) -- (\xSoketi,\yr)
+    node[midway, above, font=\scriptsize] {18. broadcast event \texttt{match\_found}};
+\draw[rmsg] (\xSoketi,\ys) -- (\xClient,\ys)
+    node[midway, above, font=\scriptsize] {19. \texttt{pusher} event \texttt{match\_found} \{game\_id\}};
+
+\end{tikzpicture}

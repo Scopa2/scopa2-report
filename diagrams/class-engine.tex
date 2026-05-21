@@ -1,0 +1,192 @@
+% UML class diagram of the in-memory game engine.
+% Required packages/libraries:
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, shapes.multipart, fit, calc}
+\begin{tikzpicture}[
+    font=\footnotesize\sffamily,
+    >={Stealth[length=2mm]},
+    every node/.style={align=left},
+    umlcls/.style={
+        rectangle split, rectangle split parts=3,
+        draw, fill=yellow!10, rounded corners=0pt,
+        text width=4.5cm, inner sep=2pt,
+        rectangle split draw splits=true,
+        font=\footnotesize\ttfamily
+    },
+    umlclsS/.style={ % smaller for parsers/utilities
+        rectangle split, rectangle split parts=3,
+        draw, fill=yellow!10, rounded corners=0pt,
+        text width=3.9cm, inner sep=2pt,
+        rectangle split draw splits=true,
+        font=\footnotesize\ttfamily
+    },
+    abscls/.style={ % abstract: italic + dashed
+        rectangle split, rectangle split parts=3,
+        draw, dashed, fill=gray!8,
+        text width=4.2cm, inner sep=2pt,
+        rectangle split draw splits=true,
+        font=\footnotesize\ttfamily
+    },
+    compose/.style={->, thick, {Diamond[length=2mm,width=1.5mm,fill=black,sep=-1pt]}-{Stealth[length=2mm]}},
+    inherit/.style={-{Triangle[length=2.4mm,width=2.4mm,open]}, thick},
+    uses/.style={->, dashed, thick}
+]
+
+% ---------- ScopaEngine ----------
+\node[umlcls] (engine) {
+    \textbf{ScopaEngine}
+    \nodepart{second}
+    -- state : GameState\\
+    -- gameSeed : string\\
+    -- onRoundEnded : Closure\\
+    -- onGameEnded : Closure\\
+    -- isReplaying : bool
+    \nodepart{third}
+    + \_\_construct(seed, cb, cb)\\
+    + replay(events) : GameState\\
+    + applyAction(actorId, pgn)\\
+    + getState() : GameState
+};
+
+% ---------- GameState ----------
+\node[umlcls, right=2.6cm of engine] (state) {
+    \textbf{GameState}
+    \nodepart{second}
+    + deck, table, shop : array\\
+    + shopExpirations : array\\
+    + mutations : map\\
+    + players : Players\\
+    + scores : GameScores\\
+    + currentTurnPlayer : string\\
+    + isGameOver : bool\\
+    + roundIndex, turnIndex : int\\
+    + lastCapturePlayer : ?string\\
+    + lastMovePgn : ?string
+    \nodepart{third}
+    + toPublicView(viewer)\\
+    + mutateCardValue / Suit / Card\\
+    + getEffective\dots()
+};
+
+% ---------- Players ----------
+\node[umlcls, below=1.4cm of state] (players) {
+    \textbf{Players}
+    \nodepart{second}
+    + p1 : PlayerState\\
+    + p2 : PlayerState
+    \nodepart{third}
+    + get(id) : PlayerState\\
+    + all() : iterable\\
+    + resetForNewRound()\\
+    + toArray() : array
+};
+
+% ---------- PlayerState ----------
+\node[umlcls, below=1.0cm of players] (pstate) {
+    \textbf{PlayerState}
+    \nodepart{second}
+    + hand, captured, santi : array\\
+    + blood, solidBlood, scope : int
+    \nodepart{third}
+    + addToHand / removeFromHand\\
+    + addToCaptured / removeFrom\dots\\
+    + addSanto / removeSanto\\
+    + addBlood / removeBlood\\
+    + resetForNewRound()
+};
+
+% ---------- GameScores ----------
+\node[umlcls, right=2.0cm of pstate] (scores) {
+    \textbf{GameScores}
+    \nodepart{second}
+    + p1, p2 : int
+    \nodepart{third}
+    + addScore(id, points)\\
+    + getScore(id) : int\\
+    + hasWinner(winScore) : bool\\
+    + getWinner() : ?string
+};
+
+% ---------- ScopaNotationParser ----------
+\node[umlclsS, left=2.0cm of engine] (parser) {
+    \textbf{ScopaNotationParser}
+    \nodepart{second}
+    \emph{(static utility)}
+    \nodepart{third}
+    + parse(actionStr) : array\\
+    \;\;types: CARD\_PLAY, SANTO\_USE,\\
+    \;\;\;\;\;\;\;\;\;\;SHOP\_BUY
+};
+
+% ---------- ScoreCalculator ----------
+\node[umlclsS, below=1.0cm of parser] (calc) {
+    \textbf{ScoreCalculator}
+    \nodepart{second}
+    \emph{(static utility)}
+    \nodepart{third}
+    + calculateRoundScore(state)\\
+    \;\;denari, settebello, primiera,\\
+    \;\;allungo, scopa count
+};
+
+% ---------- Santo abstract ----------
+\node[abscls, below=1.0cm of calc] (santo) {
+    \textbf{\textit{Santo}}\\\textit{(abstract)}
+    \nodepart{second}
+    \# id, name, description : string\\
+    \# cost : int
+    \nodepart{third}
+    + apply(pid, state, params)\\
+    + serialize(expiry) : array
+};
+
+% ---------- Concrete Santi ----------
+\node[umlclsS, right=1.0cm of santo, yshift=1.5cm] (biagio) {
+    \textbf{SanBiagio}
+    \nodepart{second}
+    id = "BIA", cost = 3
+    \nodepart{third}
+    apply: hand $\to$ denari
+};
+\node[umlclsS, right=1.0cm of santo, yshift=-0.0cm] (pantal) {
+    \textbf{SanPantaleone}
+    \nodepart{second}
+    id = "PAN", cost = \dots
+    \nodepart{third}
+    apply(\dots)
+};
+\node[umlclsS, right=1.0cm of santo, yshift=-1.5cm] (caterina) {
+    \textbf{SantaCaterina}
+    \nodepart{second}
+    id = "CAT", cost = \dots
+    \nodepart{third}
+    apply(\dots)
+};
+
+% ---------------- Relationships ----------------
+% Composition: engine -> state
+\draw[compose] (engine.east) -- node[midway, above, font=\tiny] {1} (state.west);
+
+% Composition: state -> players
+\draw[compose] (state.south) -- (players.north);
+
+% Composition: players -> playerState (2)
+\draw[compose] (players.south) -- node[midway, right, font=\tiny] {2} (pstate.north);
+
+% Composition: state -> scores (route around)
+\draw[compose] (state.south east) to[bend left=15] (scores.top);
+
+% Uses: engine -> parser, engine -> calc
+\draw[uses] (engine.west |- engine.north) ++ (0,-0.4) -- ++(-1.0,0) |- (parser.east)
+        node[pos=0.85, above, font=\tiny] {uses};
+\draw[uses] (engine.south west) to[bend right=15] node[midway, sloped, above, font=\tiny] {uses} (calc.east);
+
+% PlayerState -> Santo (carries IDs of Santi acquired)
+\draw[uses] (pstate.west) to[bend top=10] node[midway, sloped, above, font=\tiny] {refs $0..*$} (santo.south);
+
+% Inheritance: concrete santi -> Santo
+\draw[inherit] (biagio.west)  -- (santo.east |- biagio.west);
+\draw[inherit] (pantal.west)  -- (santo.east);
+\draw[inherit] (caterina.west) -- (santo.east |- caterina.west);
+
+\end{tikzpicture}

@@ -1,0 +1,84 @@
+% State machine of a match.
+% Required packages/libraries:
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, shapes.geometric, calc, fit, backgrounds}
+\begin{tikzpicture}[
+    font=\footnotesize\sffamily,
+    >={Stealth[length=2mm]},
+    state/.style={
+        draw, rounded corners=6pt, fill=blue!8,
+        minimum width=2.6cm, minimum height=0.9cm, align=center,
+        font=\footnotesize\bfseries
+    },
+    sub/.style={
+        draw, rounded corners=6pt, fill=blue!4,
+        minimum width=2.6cm, minimum height=0.8cm, align=center,
+        font=\footnotesize
+    },
+    inits/.style={circle, fill=black, inner sep=2pt},
+    final/.style={circle, draw, double, inner sep=1pt, minimum size=4mm},
+    composite/.style={
+        draw, dashed, rounded corners=8pt, fill=blue!2, inner sep=8pt
+    },
+    edge/.style={->, thick},
+    selfedge/.style={->, thick, looseness=8}
+]
+
+% Initial pseudostate + WAITING_FOR_PLAYERS
+\node[inits] (init) {};
+\node[state, below=0.6cm of init] (wait) {\texttt{WAITING\_FOR\_PLAYERS}};
+
+% Composite PLAYING state (built around substates first, drawn last via background)
+\node[sub, below=2.6cm of wait] (deal) {\texttt{deal}\\\scriptsize shuffle (seed/seed\_N), 4 to table, 3 to each};
+\node[sub, right=1.6cm of deal] (play) {\texttt{play}\\\scriptsize current turn player acts};
+\node[sub, below=1.4cm of play] (advance) {\texttt{advance round}\\\scriptsize remaining table $\to$ last capturer; score};
+
+% Self-transitions on play
+\node[font=\scriptsize, right=0.3cm of play, anchor=west, align=left]
+    (selflbl) {
+        \texttt{@SAN[..]} \;santo use \emph{(no turn change)}\\
+        \texttt{\$SAN(..)} \;shop buy \emph{(no turn change)}\\
+        \texttt{XYxZW\#} \;card play \emph{(advance turn)}
+    };
+
+% Internal transitions
+\draw[edge] (deal.east) -- node[above, font=\scriptsize] {cards dealt} (play.west);
+
+% self-loop on play
+\draw[->, thick] (play.north) .. controls +(0,0.9) and +(0.9,0.9) .. (play.east)
+    node[midway, above, font=\scriptsize] {};
+
+\draw[edge] (play.south) -- node[right, font=\scriptsize, align=left]
+    {both hands empty\\$\land$ deck empty}
+    (advance.north);
+
+\draw[edge] (advance.west) to[bend left=20]
+    node[midway, left, font=\scriptsize, align=right]
+    {$\lnot$ hasWinner(winScore)\\reshuffle for round $N{+}1$}
+    (deal.south);
+
+% Composite border
+\begin{scope}[on background layer]
+  \node[composite, fit=(deal)(play)(advance)(selflbl)] (playing) {};
+\end{scope}
+\node[anchor=north west, font=\footnotesize\bfseries] at (playing.north west)
+    {\;\texttt{PLAYING}};
+
+% FINISHED state and final
+\node[state, right=2.2cm of playing] (finished) {\texttt{FINISHED}};
+\node[final, right=0.8cm of finished] (end) {};
+
+% Top-level transitions
+\draw[edge] (init) -- (wait);
+\draw[edge] (wait.south) -- node[right, font=\scriptsize, align=left]
+    {player\_2 joins\\(2nd \texttt{POST /games/\{id\}/join})}
+    (playing.north);
+
+\draw[edge] (advance.east) to[bend right=15]
+    node[midway, below, font=\scriptsize, align=center]
+    {hasWinner(winScore)\\$\Rightarrow$ \texttt{isGameOver=true}}
+    (finished.west);
+
+\draw[edge] (finished) -- (end);
+
+\end{tikzpicture}

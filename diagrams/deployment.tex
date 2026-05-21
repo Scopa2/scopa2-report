@@ -1,0 +1,131 @@
+% Per-region Kubernetes resource graph.
+% Required packages/libraries:
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
+\begin{tikzpicture}[
+    font=\footnotesize\sffamily,
+    >={Stealth[length=2mm]},
+    ns/.style={
+        draw, dashed, rounded corners=4pt,
+        inner sep=8pt, fill=gray!4
+    },
+    nslbl/.style={font=\footnotesize\bfseries\sffamily},
+    res/.style={
+        draw, rounded corners=2pt, fill=blue!8,
+        minimum width=3.0cm, minimum height=0.75cm, align=center,
+        font=\footnotesize
+    },
+    svc/.style={
+        draw, rounded corners=2pt, fill=orange!18,
+        minimum width=3.0cm, minimum height=0.65cm, align=center,
+        font=\footnotesize
+    },
+    pod/.style={
+        draw, rounded corners=2pt, fill=green!15,
+        minimum width=1.55cm, minimum height=0.6cm, align=center,
+        font=\scriptsize
+    },
+    hpa/.style={
+        draw, rounded corners=2pt, fill=yellow!25,
+        minimum width=1.6cm, minimum height=0.55cm, align=center,
+        font=\scriptsize\itshape
+    },
+    flow/.style={->, thick},
+    softflow/.style={->, thick, gray!50!black, dashed}
+]
+
+% ===========================================================
+% Namespace: region-eu (compute)
+% ===========================================================
+\node[res] (ing) {\textbf{Ingress} (NGINX) \\ \scriptsize host: \texttt{eu.scopa.local}};
+
+\node[svc, below left=0.7cm and -0.3cm of ing]  (svcApp) {Service \\ \scriptsize \texttt{scopa2-eu-service}};
+\node[svc, below right=0.7cm and -0.3cm of ing] (svcSok) {Service \\ \scriptsize \texttt{scopa2-eu-soketi-service}};
+
+% Deployment App with HPA
+\node[res, below=0.85cm of svcApp] (depApp) {\textbf{Deployment} (FrankenPHP) \\ \scriptsize replicas: 2–10};
+\node[pod, below left=0.4cm and -1.4cm of depApp] (pa1) {App pod};
+\node[pod, right=0.1cm of pa1] (pa2) {App pod};
+\node[pod, right=0.1cm of pa2] (paN) {\dots};
+\node[hpa, right=0.25cm of depApp] (hpa) {HPA \\ CPU 70\%};
+
+\draw[flow] (depApp.south) -- (pa1.north);
+\draw[flow] (depApp.south) -- (pa2.north);
+\draw[flow] (depApp.south) -- (paN.north);
+
+% Deployment Soketi
+\node[res, below=0.85cm of svcSok] (depSok) {\textbf{Deployment} (Soketi) \\ \scriptsize replicas: 2};
+\node[pod, below left=0.4cm and -1.5cm of depSok] (ps1) {Soketi pod};
+\node[pod, right=0.1cm of ps1] (ps2) {Soketi pod};
+
+% Wires inside region-eu compute
+\draw[flow] (ing.south) -- ++(0,-0.15) -| (svcApp.north) node[pos=0.75, above, font=\tiny] {\;\texttt{/api/*}};
+\draw[flow] (ing.south) -- ++(0,-0.15) -| (svcSok.north) node[pos=0.75, above, font=\tiny] {\;\texttt{/ws/*}};
+\draw[flow] (svcApp) -- (depApp);
+\draw[flow] (svcSok) -- (depSok);
+\draw[flow, dotted] (hpa) -- (depApp);
+
+\draw[flow] (depSok.south) -- (ps1.north);
+\draw[flow] (depSok.south) -- (ps2.north);
+
+\begin{scope}[on background layer]
+  \node[ns, fill=blue!3,
+        fit=(ing)(svcApp)(svcSok)(depApp)(depSok)(pa1)(pa2)(paN)(ps1)(ps2)(hpa)] (nsCompute) {};
+\end{scope}
+\node[nslbl, anchor=north west] at (nsCompute.north west) {\;Namespace: \texttt{region-eu}};
+
+% ===========================================================
+% Namespace: cache-eu
+% ===========================================================
+\node[res, right=2.2cm of svcSok] (ssRedis) {\textbf{StatefulSet} \\ \scriptsize \texttt{eu-scopa-redis}};
+\node[pod, below=0.4cm of ssRedis, xshift=-1.3cm] (rm) {redis-0 \\ \scriptsize (master)};
+\node[pod, right=0.1cm of rm] (rr1) {redis-1 \\ \scriptsize (replica)};
+\node[pod, right=0.1cm of rr1] (rr2) {redis-2 \\ \scriptsize (replica)};
+
+\node[res, below=1.2cm of ssRedis] (ssSent) {\textbf{StatefulSet} \\ \scriptsize sentinel (quorum 2)};
+\node[pod, below=0.4cm of ssSent, xshift=-1.3cm] (s0) {sentinel-0};
+\node[pod, right=0.1cm of s0] (s1) {sentinel-1};
+\node[pod, right=0.1cm of s1] (s2) {sentinel-2};
+
+\draw[flow] (ssRedis) -- (rm);
+\draw[flow] (ssRedis) -- (rr1);
+\draw[flow] (ssRedis) -- (rr2);
+\draw[flow] (ssSent)  -- (s0);
+\draw[flow] (ssSent)  -- (s1);
+\draw[flow] (ssSent)  -- (s2);
+
+\begin{scope}[on background layer]
+  \node[ns, fill=red!3,
+        fit=(ssRedis)(ssSent)(rm)(rr1)(rr2)(s0)(s1)(s2)] (nsCache) {};
+\end{scope}
+\node[nslbl, anchor=north west] at (nsCache.north west) {\;Namespace: \texttt{cache-eu}};
+
+% ===========================================================
+% Namespace: db (shared)
+% ===========================================================
+\node[res, below=2.0cm of depApp] (ssMaster) {\textbf{StatefulSet} \\ \scriptsize \texttt{yb-masters}};
+\node[pod, below=0.4cm of ssMaster, xshift=-1.3cm] (m0) {yb-master-0};
+\node[pod, right=0.1cm of m0] (m1) {yb-master-1};
+\node[pod, right=0.1cm of m1] (m2) {yb-master-2};
+
+\node[res, right=1.5cm of ssMaster] (ssTs) {\textbf{StatefulSet} \\ \scriptsize \texttt{yb-tservers} (Raft)};
+\node[pod, below=0.4cm of ssTs, xshift=-1.3cm] (t0) {yb-tserver-0};
+\node[pod, right=0.1cm of t0] (t1) {yb-tserver-1};
+\node[pod, right=0.1cm of t1] (t2) {yb-tserver-2};
+
+\draw[flow] (ssMaster) -- (m0);
+\draw[flow] (ssMaster) -- (m1);
+\draw[flow] (ssMaster) -- (m2);
+\draw[flow] (ssTs)     -- (t0);
+\draw[flow] (ssTs)     -- (t1);
+\draw[flow] (ssTs)     -- (t2);
+
+\begin{scope}[on background layer]
+  \node[ns, fill=green!3,
+        fit=(ssMaster)(ssTs)(m0)(m1)(m2)(t0)(t1)(t2)] (nsDB) {};
+\end{scope}
+\node[nslbl, anchor=north west] at (nsDB.north west)
+    {\;Namespace: \texttt{db} \emph{(shared between both regional app namespaces)}};
+
+
+\end{tikzpicture}
