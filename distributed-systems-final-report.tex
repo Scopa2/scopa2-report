@@ -259,10 +259,9 @@ every pod \emph{reads} the queue, every pod can \emph{write} to it, and
 nobody owns it.
 
 We rejected the \emph{object-based} style described by
-\citet{birrell1984implementing} for the same reasons the course critiques
-it: fine-grained remote method calls between the application and the
-database would have multiplied chatty round-trips, and we wanted the
-freedom to swap the underlying database, the Redis cluster, or the
+\citet{birrell1984implementing}: fine-grained remote method 
+calls between the application and the database would have multiplied chatty round-trips, 
+and we wanted the freedom to swap the underlying database, the Redis cluster, or the
 realtime broker without rewriting the controllers.
 
 \subsection{Infrastructure}\label{infrastructure}
@@ -1091,9 +1090,8 @@ the password-based flow is one of the items in
 
 \subsection{Work Split}
 
-The course rules require us to make explicit how the workload was
-divided between the two members of the group; the table below
-summarises the principal responsibilities. The split is intentionally
+The table below summarises the principal responsibilities. 
+The split is intentionally
 based on areas of ownership rather than on a temporal slice: each
 member owned the design and implementation of their areas end-to-end,
 with cross-review on the report and the architectural decisions.
